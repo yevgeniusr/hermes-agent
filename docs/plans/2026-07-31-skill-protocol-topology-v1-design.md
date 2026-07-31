@@ -19,8 +19,9 @@ without a query it will follow the existing code path unchanged.
 
 Two read-only CLI actions will share the same planner. `skills route` plans
 against currently eligible skills, while `skills topology` audits the same
-local graph. JSON is deterministically serialized and includes only the query's
-SHA-256 digest, never the raw query. Human output shows route order, reasons,
+local graph. JSON is deterministically serialized, identifies the query with a
+SHA-256 digest, and has no dedicated raw-query field. Selected skill metadata
+may naturally repeat query terms. Human output shows route order, reasons,
 costs, and diagnostics. No route event is persisted because V1 has no concrete
 reader for a separate event log.
 

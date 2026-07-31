@@ -93,7 +93,9 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         "route", help="Plan a small local skill route for a query"
     )
     skills_route.add_argument(
-        "query", nargs="+", help="Local routing query (never stored or emitted in JSON)"
+        "query",
+        nargs="+",
+        help="Local routing query (not stored; JSON has no dedicated query field)",
     )
     skills_route.add_argument(
         "--limit",

@@ -1177,7 +1177,7 @@ hermes skills opt-in --sync            # undo: remove marker and re-seed now
 
 Notes:
 - `route` is local and read-only; unlike `search`, it never queries remote registries. `--limit` counts required skills and `--budget-chars` uses actual complete SKILL.md character counts.
-- Route JSON omits the raw query and includes only its SHA-256 digest. V1 returns the artifact without persisting a route event.
+- Route JSON has no dedicated raw-query field and identifies the query with a SHA-256 digest; selected skill metadata may naturally repeat query terms. V1 returns the artifact without persisting a route event.
 - `topology` is a graph/manifest audit and is distinct from the security-focused `skills audit` command.
 - `--force` can override non-dangerous policy blocks for third-party/community skills.
 - `--force` does not override a `dangerous` scan verdict.

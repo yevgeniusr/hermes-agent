@@ -146,8 +146,9 @@ The planner ranks existing name, category, description, tags, domains, inputs,
 and outputs deterministically, then places transitive requirements before the
 matching root while respecting both limits. It never executes a skill. Route
 JSON contains a SHA-256 query digest, selection reasons, costs, and diagnostics,
-but never the raw query. Route decisions are returned to the caller and are not
-persisted in V1.
+but no dedicated raw-query field. Selected skill metadata may naturally repeat
+query terms. Route decisions are returned to the caller and are not persisted
+in V1.
 
 The existing `skills_list` model tool accepts optional `query`, `limit`, and
 `budget_chars` parameters for the same local planner. With no `query`, its

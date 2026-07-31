@@ -124,10 +124,61 @@ def _name_key(value: str) -> str:
     return value.strip().casefold()
 
 
+def _index_records(
+    skills: Sequence[Mapping[str, Any]],
+) -> tuple[
+    list[Mapping[str, Any]],
+    dict[str, Mapping[str, Any]],
+    dict[str, tuple[Mapping[str, Any], ...]],
+]:
+    """Index records by canonical name without choosing across collisions."""
+    ordered = sorted(
+        skills,
+        key=lambda item: (
+            _name_key(_record_name(item)),
+            _record_name(item),
+            str(item.get("category") or "").casefold(),
+            str(item.get("category") or ""),
+        ),
+    )
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for record in ordered:
+        key = _name_key(_record_name(record))
+        if key:
+            grouped.setdefault(key, []).append(record)
+
+    by_name: dict[str, Mapping[str, Any]] = {}
+    collisions: dict[str, tuple[Mapping[str, Any], ...]] = {}
+    for key in sorted(grouped):
+        records = grouped[key]
+        if len(records) == 1:
+            by_name[key] = records[0]
+        else:
+            collisions[key] = tuple(records)
+    return ordered, by_name, collisions
+
+
 def _diagnostic(code: str, message: str, **details: Any) -> dict[str, Any]:
     item = {"code": code, "message": message}
     item.update({key: value for key, value in details.items() if value is not None})
     return item
+
+
+def _collision_diagnostic(
+    canonical_name: str, records: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    names = sorted(
+        (_record_name(record) for record in records),
+        key=lambda name: (name.casefold(), name),
+    )
+    return _diagnostic(
+        "canonical_name_collision",
+        f"Canonical skill name '{canonical_name}' is ambiguous across "
+        f"{len(records)} installed records.",
+        canonical_name=canonical_name,
+        names=names,
+        record_count=len(records),
+    )
 
 
 def _sort_diagnostics(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -194,20 +245,11 @@ def _dependency_cycles(
 
 def audit_topology(skills: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Audit a supplied installed-skill graph without executing any skill."""
-    ordered = sorted(
-        skills,
-        key=lambda item: (
-            _name_key(_record_name(item)),
-            str(item.get("category") or ""),
-        ),
-    )
-    by_name: dict[str, Mapping[str, Any]] = {}
-    diagnostics: list[dict[str, Any]] = []
-    for record in ordered:
-        name = _record_name(record)
-        key = _name_key(name)
-        if key and key not in by_name:
-            by_name[key] = record
+    ordered, by_name, collisions = _index_records(skills)
+    diagnostics = [
+        _collision_diagnostic(key, records)
+        for key, records in collisions.items()
+    ]
 
     lifecycle_counts = {value: 0 for value in LIFECYCLES}
     lifecycle_counts.update({"unspecified": 0, "invalid": 0})
@@ -236,6 +278,8 @@ def audit_topology(skills: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         else:
             lifecycle_counts["unspecified"] += 1
 
+        if key in collisions:
+            continue
         for field in REFERENCE_FIELDS:
             for reference in getattr(topology, field):
                 ref_key = _name_key(reference)
@@ -249,6 +293,8 @@ def audit_topology(skills: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                             reference=reference,
                         )
                     )
+                elif ref_key in collisions:
+                    continue
                 elif ref_key not in by_name:
                     diagnostics.append(
                         _diagnostic(
@@ -264,7 +310,8 @@ def audit_topology(skills: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                     other_name = _record_name(by_name[ref_key])
                     conflict_pairs.add(tuple(sorted((name, other_name), key=_name_key)))
 
-    cycles = _dependency_cycles(ordered, by_name)
+    unique_records = [by_name[key] for key in sorted(by_name)]
+    cycles = _dependency_cycles(unique_records, by_name)
     for cycle in cycles:
         diagnostics.append(
             _diagnostic(
@@ -288,7 +335,7 @@ def audit_topology(skills: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             )
         )
 
-    count = len(ordered)
+    count = len(skills)
     coverage = round((manifests_declared / count * 100), 2) if count else 0.0
     sorted_diagnostics = _sort_diagnostics(diagnostics)
     return {
@@ -346,7 +393,7 @@ def _score_record(record: Mapping[str, Any], query: str) -> tuple[int, list[str]
         ]
         if exact_values:
             score += exact_weight
-            reasons.append(f"matched exact {label} '{exact_values[0]}'")
+            reasons.append(f"matched exact {label}")
             continue
         overlap_values = [value for value in values if query_tokens & _tokens(value)]
         if overlap_values:
@@ -373,15 +420,16 @@ def _cost(record: Mapping[str, Any], field: str) -> int:
 
 
 def _route_conflicts(
-    names: Sequence[str], by_name: Mapping[str, Mapping[str, Any]]
+    keys: Sequence[str], by_name: Mapping[str, Mapping[str, Any]]
 ) -> list[list[str]]:
     pairs: set[tuple[str, str]] = set()
-    keys = {_name_key(name) for name in names}
-    for name in names:
-        topology = _record_topology(by_name[_name_key(name)])
+    selected_keys = set(keys)
+    for key in keys:
+        name = _record_name(by_name[key])
+        topology = _record_topology(by_name[key])
         for reference in topology.conflicts:
             ref_key = _name_key(reference)
-            if ref_key in keys and ref_key != _name_key(name):
+            if ref_key in selected_keys and ref_key != key:
                 other = _record_name(by_name[ref_key])
                 pairs.add(tuple(sorted((name, other), key=_name_key)))
     return [
@@ -416,21 +464,15 @@ def plan_skill_route(
             "diagnostics": _sort_diagnostics(diagnostics),
         }
 
-    ordered = sorted(
-        skills,
-        key=lambda item: (
-            _name_key(_record_name(item)),
-            str(item.get("category") or ""),
-        ),
+    _, by_name, collisions = _index_records(skills)
+    diagnostics.extend(
+        _collision_diagnostic(key, records)
+        for key, records in collisions.items()
     )
-    by_name: dict[str, Mapping[str, Any]] = {}
-    for record in ordered:
-        key = _name_key(_record_name(record))
-        if key and key not in by_name:
-            by_name[key] = record
 
     ranked: list[tuple[int, str, str, Mapping[str, Any], list[str]]] = []
-    for record in ordered:
+    for key in sorted(by_name):
+        record = by_name[key]
         score, reasons = _score_record(record, str(query))
         if score:
             ranked.append(
@@ -444,7 +486,23 @@ def plan_skill_route(
             )
     ranked.sort(key=lambda item: item[:3])
 
+    ambiguous_match = any(
+        _score_record(record, str(query))[0]
+        for records in collisions.values()
+        for record in records
+    )
     if not ranked:
+        if ambiguous_match:
+            return {
+                "version": ROUTE_ARTIFACT_VERSION,
+                "status": "blocked",
+                "query_digest": digest,
+                "limits": {"max_skills": max_skills, "budget_chars": budget_chars},
+                "route": [],
+                "total_cost_chars": 0,
+                "total_cost_bytes": 0,
+                "diagnostics": _sort_diagnostics(diagnostics),
+            }
         diagnostics.append(
             _diagnostic(
                 "no_match", "No installed skill metadata matched the query."
@@ -458,7 +516,7 @@ def plan_skill_route(
             "route": [],
             "total_cost_chars": 0,
             "total_cost_bytes": 0,
-            "diagnostics": diagnostics,
+            "diagnostics": _sort_diagnostics(diagnostics),
         }
 
     selected: list[str] = []
@@ -520,6 +578,8 @@ def plan_skill_route(
                                 reference=reference,
                             )
                         )
+                    elif ref_key in collisions:
+                        continue
                     elif ref_key not in by_name:
                         findings.append(
                             _diagnostic(
@@ -544,6 +604,11 @@ def plan_skill_route(
                     )
                     continue
                 dependency = by_name.get(ref_key)
+                if ref_key in collisions:
+                    blockers.append(
+                        _collision_diagnostic(ref_key, collisions[ref_key])
+                    )
+                    continue
                 if dependency is None:
                     blockers.append(
                         _diagnostic(
@@ -557,7 +622,7 @@ def plan_skill_route(
                 visit(dependency)
             visiting.pop()
             done.add(key)
-            closure.append(name)
+            closure.append(key)
 
         visit(root)
         if blockers:
@@ -585,7 +650,7 @@ def plan_skill_route(
             break
         root_name = _record_name(root)
         root_key = _name_key(root_name)
-        if root_name in selected:
+        if root_key in selected:
             roles[root_key] = "root"
             scores[root_key] = root_score
             reasons_by_name[root_key] = root_reasons
@@ -595,9 +660,9 @@ def plan_skill_route(
         diagnostics.extend(findings)
         if blockers:
             continue
-        new_names = [name for name in closure if name not in selected]
-        combined_names = [*selected, *new_names]
-        existing_conflicts = _route_conflicts(combined_names, by_name)
+        new_keys = [key for key in closure if key not in selected]
+        combined_keys = [*selected, *new_keys]
+        existing_conflicts = _route_conflicts(combined_keys, by_name)
         if existing_conflicts:
             for left, right in existing_conflicts:
                 diagnostics.append(
@@ -609,19 +674,18 @@ def plan_skill_route(
                     )
                 )
             continue
-        if len(combined_names) > max_skills:
+        if len(combined_keys) > max_skills:
             diagnostics.append(
                 _diagnostic(
                     "limit_omission",
                     f"Omitted '{root_name}' because its dependency closure exceeds the skill limit.",
                     skill=root_name,
-                    required_skill_count=len(combined_names),
+                    required_skill_count=len(combined_keys),
                 )
             )
             continue
         projected_cost = sum(
-            _cost(by_name[_name_key(name)], "cost_chars")
-            for name in combined_names
+            _cost(by_name[key], "cost_chars") for key in combined_keys
         )
         if projected_cost > budget_chars:
             diagnostics.append(
@@ -636,9 +700,8 @@ def plan_skill_route(
             continue
 
         selected_tier_score = root_score
-        selected.extend(new_names)
-        for name in closure:
-            key = _name_key(name)
+        selected.extend(new_keys)
+        for key in closure:
             if key == root_key:
                 roles[key] = "root"
                 scores[key] = root_score
@@ -654,20 +717,26 @@ def plan_skill_route(
                         in {
                             _name_key(reference)
                             for reference in _record_topology(
-                                by_name[_name_key(candidate)]
+                                by_name[candidate]
                             ).requires
                         }
                     ),
-                    key=_name_key,
+                    key=lambda candidate: (
+                        _name_key(_record_name(by_name[candidate])),
+                        _record_name(by_name[candidate]),
+                    ),
                 )
-                reasons_by_name[key] = [f"required by {parent}" for parent in parents]
+                reasons_by_name[key] = [
+                    f"required by {_record_name(by_name[parent])}"
+                    for parent in parents
+                ]
 
     route: list[dict[str, Any]] = []
     cumulative_chars = 0
     cumulative_bytes = 0
-    for name in selected:
-        key = _name_key(name)
+    for key in selected:
         record = by_name[key]
+        name = _record_name(record)
         cost_chars = _cost(record, "cost_chars")
         cost_bytes = _cost(record, "cost_bytes")
         cumulative_chars += cost_chars

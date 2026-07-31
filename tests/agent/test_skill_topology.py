@@ -98,6 +98,30 @@ def test_ranking_is_exact_name_then_exact_tag_then_exact_domain_then_description
     assert scores[0] > scores[1] > scores[2] > scores[3]
 
 
+@pytest.mark.parametrize(
+    ("label", "record_kwargs"),
+    [
+        ("tag", {"tags": ["private phrase 8675309"]}),
+        ("domain", {"topology": {"domains": ["private phrase 8675309"]}}),
+        ("input", {"topology": {"inputs": ["private phrase 8675309"]}}),
+        ("output", {"topology": {"outputs": ["private phrase 8675309"]}}),
+        ("category", {"category": "private phrase 8675309"}),
+    ],
+)
+def test_exact_taxonomy_reasons_do_not_echo_the_matched_value(label, record_kwargs):
+    query = "private phrase 8675309"
+    record = skill(f"helper for {query}", **record_kwargs)
+
+    result = plan_skill_route(
+        [record], query, max_skills=1, budget_chars=1000
+    )
+
+    assert result["route"][0]["name"] == f"helper for {query}"
+    assert f"matched exact {label}" in result["route"][0]["reasons"]
+    assert all(query not in reason for reason in result["route"][0]["reasons"])
+    assert "query" not in result
+
+
 def test_route_excludes_weak_description_root_after_review_tier_is_selected():
     skills = [
         skill(
@@ -207,6 +231,114 @@ def test_ranking_ties_are_deterministic_by_name_then_category():
 
     assert [item["name"] for item in first["route"]] == ["alpha", "zeta"]
     assert first == second
+
+
+def test_collision_only_query_fails_closed_without_duplicate_route_or_budget():
+    records = [
+        skill("Review", tags=["review"], cost=100),
+        skill("review", tags=["review"], cost=700),
+    ]
+
+    result = plan_skill_route(
+        records, "review", max_skills=5, budget_chars=1000
+    )
+
+    assert result["status"] == "blocked"
+    assert result["route"] == []
+    assert result["total_cost_chars"] == 0
+    assert result["total_cost_bytes"] == 0
+    assert diagnostic_codes(result) == ["canonical_name_collision"]
+    assert result["diagnostics"][0]["canonical_name"] == "review"
+    assert result["diagnostics"][0]["names"] == ["Review", "review"]
+
+
+def test_unrelated_unique_skill_routes_when_another_name_is_ambiguous():
+    result = plan_skill_route(
+        [
+            skill("Review", tags=["review"]),
+            skill("review", tags=["review"]),
+            skill("testing", cost=75),
+        ],
+        "testing",
+        max_skills=5,
+        budget_chars=1000,
+    )
+
+    assert result["status"] == "ok"
+    assert [item["name"] for item in result["route"]] == ["testing"]
+    assert result["total_cost_chars"] == 75
+    assert diagnostic_codes(result) == ["canonical_name_collision"]
+
+
+def test_ambiguous_required_dependency_blocks_root_as_collision_not_missing():
+    result = plan_skill_route(
+        [
+            skill("Review"),
+            skill("review"),
+            skill(
+                "publish",
+                topology={"requires": "review", "follows": "review"},
+            ),
+        ],
+        "publish",
+        max_skills=5,
+        budget_chars=1000,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["route"] == []
+    assert "canonical_name_collision" in diagnostic_codes(result)
+    assert "missing_required_skill" not in diagnostic_codes(result)
+    assert "missing_reference" not in diagnostic_codes(result)
+
+
+def test_collision_route_and_audit_artifacts_are_input_order_independent():
+    records = [
+        skill("Review", tags=["review"], cost=100),
+        skill("review", tags=["review"], cost=700),
+        skill("testing", topology={"lifecycle": "stable"}, cost=75),
+    ]
+
+    collision_route = plan_skill_route(
+        records, "review", max_skills=5, budget_chars=1000
+    )
+    reversed_collision_route = plan_skill_route(
+        list(reversed(records)), "review", max_skills=5, budget_chars=1000
+    )
+    unique_route = plan_skill_route(
+        records, "testing", max_skills=5, budget_chars=1000
+    )
+    reversed_unique_route = plan_skill_route(
+        list(reversed(records)), "testing", max_skills=5, budget_chars=1000
+    )
+    audit = audit_topology(records)
+    reversed_audit = audit_topology(list(reversed(records)))
+
+    assert json.dumps(collision_route, sort_keys=True) == json.dumps(
+        reversed_collision_route, sort_keys=True
+    )
+    assert json.dumps(unique_route, sort_keys=True) == json.dumps(
+        reversed_unique_route, sort_keys=True
+    )
+    assert json.dumps(audit, sort_keys=True) == json.dumps(
+        reversed_audit, sort_keys=True
+    )
+    assert diagnostic_codes(audit) == ["canonical_name_collision"]
+
+
+def test_exact_case_duplicate_records_also_fail_closed_once():
+    duplicate = skill("review", tags=["review"], cost=100)
+
+    route = plan_skill_route(
+        [duplicate, dict(duplicate)], "review", max_skills=5, budget_chars=1000
+    )
+    audit = audit_topology([duplicate, dict(duplicate)])
+
+    assert route["route"] == []
+    assert route["total_cost_chars"] == 0
+    assert diagnostic_codes(route) == ["canonical_name_collision"]
+    assert diagnostic_codes(audit) == ["canonical_name_collision"]
+    assert audit["diagnostics"][0]["record_count"] == 2
 
 
 def test_transitive_requirements_are_ordered_before_the_matching_root():

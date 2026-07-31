@@ -197,3 +197,34 @@ def test_main_dispatches_local_topology_actions_before_remote_hub(
     main_module.cmd_skills(SimpleNamespace(skills_action=action))
 
     assert calls == [("local", action)]
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_status"),
+    [
+        (["skills", "route", "testing", "--json"], "ok"),
+        (["skills", "topology", "--json"], "ok"),
+    ],
+)
+def test_full_hermes_cli_invocation_parses_and_dispatches_topology_actions(
+    argv, expected_status, monkeypatch, capsys
+):
+    import sys
+
+    import hermes_cli.main as main_module
+    from hermes_cli import skills_topology
+    from hermes_cli import config as config_module
+
+    monkeypatch.setattr(
+        skills_topology,
+        "_load_skill_records",
+        lambda **kwargs: [_record("testing")],
+    )
+    monkeypatch.setattr(main_module, "_prepare_agent_startup", lambda args: None)
+    monkeypatch.setattr(config_module, "get_container_exec_info", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["hermes", *argv])
+
+    main_module.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == expected_status

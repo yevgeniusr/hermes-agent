@@ -9,6 +9,13 @@ metadata:
   hermes:
     tags: [code-review, security, verification, quality, pre-commit, auto-fix]
     related_skills: [subagent-driven-development, plan, test-driven-development, github-code-review]
+    topology:
+      domains: [software-development, code-review]
+      inputs: [tested-implementation, tested-fix, code-diff]
+      outputs: [review-findings, verified-change]
+      requires: [test-driven-development]
+      follows: [test-driven-development, systematic-debugging]
+      lifecycle: stable
 ---
 
 # Pre-Commit Code Verification

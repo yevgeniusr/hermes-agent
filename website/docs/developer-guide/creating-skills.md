@@ -57,6 +57,16 @@ metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]
     related_skills: [other-skill-name]
+    topology:                           # Optional local route metadata (V1)
+      domains: [software-development]
+      inputs: [requirements]
+      outputs: [tested-change]
+      requires: [prerequisite-skill]
+      follows: [earlier-handoff]
+      precedes: [later-handoff]
+      conflicts: [incompatible-skill]
+      permissions: [filesystem-write]
+      lifecycle: candidate
     requires_toolsets: [web]            # Optional — only show when these toolsets are active
     requires_tools: [web_search]        # Optional — only show when these tools are available
     fallback_for_toolsets: [browser]    # Optional — hide when these toolsets are active
@@ -97,6 +107,52 @@ Known failure modes and how to handle them.
 ## Verification
 How the agent confirms it worked.
 ```
+
+### Skill Topology and Local Routing
+
+Skills may declare compact, optional routing metadata under
+`metadata.hermes.topology`. Skills without it remain valid and continue to
+appear through the normal discovery paths.
+
+| Field | V1 meaning |
+|-------|------------|
+| `domains` | Task areas used for high-confidence local matching. |
+| `inputs` / `outputs` | Named artifacts or states the skill consumes and produces. |
+| `requires` | Skill dependencies. The route planner includes them transitively before the dependent. |
+| `follows` / `precedes` | Directed handoff hints for graph inspection; they do not force inclusion in V1. |
+| `conflicts` | Skills that must not coexist in one planned route. |
+| `permissions` | Descriptive permission needs. This field never grants access or bypasses tool, platform, environment, or approval gates. |
+| `lifecycle` | One of `experimental`, `candidate`, `stable`, or `deprecated`. Other values are reported by the topology audit. |
+
+Every scalar field that accepts multiple values may be written as one string or
+a YAML list. Hermes normalizes values and computes `cost_chars` and
+`cost_bytes` from the actual complete SKILL.md; authors do not maintain a cost
+estimate.
+
+`related_skills` and topology edges serve different contracts:
+`related_skills` is an undirected discovery hint shown when browsing a skill.
+Topology `requires`, `follows`, and `precedes` are directed planning/handoff
+edges. Use `requires` only for a true prerequisite; broad affinity belongs in
+`related_skills`.
+
+Inspect or plan against the local graph with:
+
+```bash
+hermes skills topology --json
+hermes skills route "review this change" --limit 4 --budget-chars 24000 --json
+```
+
+The planner ranks existing name, category, description, tags, domains, inputs,
+and outputs deterministically, then places transitive requirements before the
+matching root while respecting both limits. It never executes a skill. Route
+JSON contains a SHA-256 query digest, selection reasons, costs, and diagnostics,
+but never the raw query. Route decisions are returned to the caller and are not
+persisted in V1.
+
+The existing `skills_list` model tool accepts optional `query`, `limit`, and
+`budget_chars` parameters for the same local planner. With no `query`, its
+legacy minimal listing shape is unchanged. Query mode alone includes route
+reasons and normalized topology.
 
 ### Platform-Specific Skills
 

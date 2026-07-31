@@ -9,6 +9,13 @@ metadata:
   hermes:
     tags: [debugging, troubleshooting, problem-solving, root-cause, investigation]
     related_skills: [test-driven-development, plan, subagent-driven-development]
+    topology:
+      domains: [software-development, debugging]
+      inputs: [bug-report, failing-test, unexpected-behavior]
+      outputs: [root-cause, tested-fix]
+      follows: [plan]
+      precedes: [requesting-code-review]
+      lifecycle: stable
 ---
 
 # Systematic Debugging

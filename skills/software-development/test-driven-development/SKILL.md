@@ -9,6 +9,13 @@ metadata:
   hermes:
     tags: [testing, tdd, development, quality, red-green-refactor]
     related_skills: [systematic-debugging, plan, subagent-driven-development]
+    topology:
+      domains: [software-development, testing]
+      inputs: [requirements, implementation-plan, bug-report]
+      outputs: [failing-test, tested-implementation]
+      follows: [plan]
+      precedes: [requesting-code-review]
+      lifecycle: stable
 ---
 
 # Test-Driven Development (TDD)

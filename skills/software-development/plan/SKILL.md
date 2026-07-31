@@ -9,6 +9,12 @@ metadata:
   hermes:
     tags: [planning, plan-mode, implementation, workflow, design, documentation]
     related_skills: [subagent-driven-development, test-driven-development, requesting-code-review]
+    topology:
+      domains: [software-development, planning]
+      inputs: [requirements, design]
+      outputs: [implementation-plan]
+      precedes: [test-driven-development, systematic-debugging]
+      lifecycle: stable
 ---
 
 # Plan Mode

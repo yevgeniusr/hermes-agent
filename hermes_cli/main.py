@@ -11080,6 +11080,10 @@ def cmd_skills(args):
         from hermes_cli.skills_config import skills_command as skills_config_command
 
         skills_config_command(args)
+    elif getattr(args, "skills_action", None) in {"route", "topology"}:
+        from hermes_cli.skills_topology import skills_topology_command
+
+        skills_topology_command(args)
     else:
         from hermes_cli.skills_hub import skills_command
 

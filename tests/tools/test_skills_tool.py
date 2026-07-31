@@ -9,6 +9,7 @@ import pytest
 
 import tools.skills_tool as skills_tool_module
 from tools.skills_tool import (
+    SKILLS_LIST_SCHEMA,
     _get_required_environment_variables,
     _parse_frontmatter,
     _parse_tags,
@@ -294,6 +295,131 @@ class TestSkillsList:
         assert result["count"] == 1
         assert result["categories"] == ["linked"]
         assert result["skills"][0]["name"] == "knowledge-brain"
+
+    def test_unqueried_payload_keeps_minimal_skill_shape(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "skill-a",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    tags: [testing]\n"
+                    "    topology:\n"
+                    "      domains: [quality]\n"
+                ),
+            )
+            result = json.loads(skills_list())
+
+        assert result["skills"] == [
+            {
+                "name": "skill-a",
+                "description": "Description for skill-a.",
+                "category": None,
+            }
+        ]
+
+    def test_unqueried_empty_category_keeps_legacy_listing_shape(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "skill-a", category="devops")
+            result = json.loads(skills_list(category="missing"))
+
+        assert result == {
+            "success": True,
+            "skills": [],
+            "categories": [],
+            "count": 0,
+            "hint": "Use skill_view(name) to see full content, tags, and linked files",
+        }
+
+    def test_rich_discovery_computes_actual_character_and_byte_costs(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(
+                tmp_path,
+                "review",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    tags: [quality]\n"
+                    "    topology:\n"
+                    "      domains: [code-review]\n"
+                    "      lifecycle: stable\n"
+                ),
+                body="Review the change. 🧪",
+            )
+            record = _find_all_skills(include_topology=True)[0]
+
+        content = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        assert record["cost_chars"] == len(content)
+        assert record["cost_bytes"] == len(content.encode("utf-8"))
+        assert record["cost_bytes"] > record["cost_chars"]
+        assert record["tags"] == ["quality"]
+        assert record["topology"].domains == ("code-review",)
+
+    def test_topology_audit_discovery_can_include_runtime_ineligible_skills(
+        self, tmp_path
+    ):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "windows-only",
+                frontmatter_extra=(
+                    "platforms: [windows]\n"
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    topology:\n"
+                    "      lifecycle: stable\n"
+                ),
+            )
+            eligible = _find_all_skills(include_topology=True)
+            installed = _find_all_skills(
+                skip_disabled=True,
+                include_topology=True,
+                include_ineligible=True,
+            )
+
+        assert eligible == []
+        assert [record["name"] for record in installed] == ["windows-only"]
+
+    def test_query_mode_returns_route_without_raw_query(self, tmp_path):
+        query = "review private-8675309"
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "review-private-8675309",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    topology:\n"
+                    "      lifecycle: stable\n"
+                ),
+            )
+            raw = skills_list(query=query, limit=1, budget_chars=10000)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["mode"] == "route"
+        assert result["status"] == "ok"
+        assert result["route"][0]["name"] == "review-private-8675309"
+        assert query not in raw
+
+    def test_query_mode_does_not_create_a_missing_skills_directory(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            result = json.loads(skills_list(query="testing"))
+
+        assert result["status"] == "no_match"
+        assert not skills_dir.exists()
+
+    def test_schema_adds_only_optional_route_parameters(self):
+        properties = SKILLS_LIST_SCHEMA["parameters"]["properties"]
+
+        assert SKILLS_LIST_SCHEMA["parameters"]["required"] == []
+        assert "query" in SKILLS_LIST_SCHEMA["description"]
+        assert properties["query"]["type"] == "string"
+        assert properties["limit"]["minimum"] == 1
+        assert properties["budget_chars"]["minimum"] == 1
 
 
 # ---------------------------------------------------------------------------

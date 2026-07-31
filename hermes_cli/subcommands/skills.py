@@ -6,7 +6,17 @@ Handler injected to avoid importing ``main``.
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
+
+from agent.skill_topology import DEFAULT_ROUTE_BUDGET_CHARS, DEFAULT_ROUTE_LIMIT
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
 
 
 def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
@@ -77,6 +87,38 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
             "minimax",
         ],
         help="Filter by source or provider (e.g. nvidia, openai)",
+    )
+
+    skills_route = skills_subparsers.add_parser(
+        "route", help="Plan a small local skill route for a query"
+    )
+    skills_route.add_argument(
+        "query", nargs="+", help="Local routing query (never stored or emitted in JSON)"
+    )
+    skills_route.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=DEFAULT_ROUTE_LIMIT,
+        help=f"Maximum skills including requirements (default: {DEFAULT_ROUTE_LIMIT})",
+    )
+    skills_route.add_argument(
+        "--budget-chars",
+        type=_positive_int,
+        default=DEFAULT_ROUTE_BUDGET_CHARS,
+        help=(
+            "Maximum cumulative SKILL.md characters "
+            f"(default: {DEFAULT_ROUTE_BUDGET_CHARS})"
+        ),
+    )
+    skills_route.add_argument(
+        "--json", action="store_true", help="Output a stable JSON route artifact"
+    )
+
+    skills_topology = skills_subparsers.add_parser(
+        "topology", help="Audit the installed local skill topology graph"
+    )
+    skills_topology.add_argument(
+        "--json", action="store_true", help="Output a stable JSON audit artifact"
     )
     skills_search.add_argument("--limit", type=int, default=25, help="Max results")
     skills_search.add_argument(

@@ -666,13 +666,24 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         return False
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+def _find_all_skills(
+    *,
+    skip_disabled: bool = False,
+    include_topology: bool = False,
+    include_ineligible: bool = False,
+) -> List[Dict[str, Any]]:
     """Recursively find all skills in ~/.hermes/skills/ and external dirs.
 
     Args:
         skip_disabled: If True, return ALL skills regardless of disabled
             state (used by ``hermes skills`` config UI). Default False
             filters out disabled skills.
+        include_topology: If True, include normalized topology, tags, and
+            actual SKILL.md character/byte costs for local route planning.
+            Default False preserves the minimal metadata shape.
+        include_ineligible: If True, include skills gated from the current
+            platform/environment. Used only by the read-only installed-graph
+            topology audit; routes keep the gates enforced.
 
     Returns:
         List of skill metadata dicts (name, description, category).
@@ -683,7 +694,10 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """
     from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
 
-    cache_key = _SKILLS_CACHE_KEY_DISABLED if skip_disabled else _SKILLS_CACHE_KEY_FILTERED
+    base_cache_key = (
+        _SKILLS_CACHE_KEY_DISABLED if skip_disabled else _SKILLS_CACHE_KEY_FILTERED
+    )
+    cache_key = (base_cache_key, include_topology, include_ineligible)
 
     # Load disabled set once (not per-skill). Part of the cache signature:
     # disabling a skill is a config change with no filesystem mtime bump.
@@ -725,13 +739,18 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
             skill_dir = skill_md.parent
 
             try:
-                content = skill_md.read_text(encoding="utf-8")[:4000]
+                if include_topology:
+                    raw_content = skill_md.read_bytes()
+                    content = raw_content.decode("utf-8")
+                else:
+                    raw_content = b""
+                    content = skill_md.read_text(encoding="utf-8")[:4000]
                 frontmatter, body = _parse_frontmatter(content)
 
-                if not skill_matches_platform(frontmatter):
+                if not include_ineligible and not skill_matches_platform(frontmatter):
                     continue
 
-                if not skill_matches_environment(frontmatter):
+                if not include_ineligible and not skill_matches_environment(frontmatter):
                     continue
 
                 name = frontmatter.get("name", skill_dir.name)[:MAX_NAME_LENGTH]
@@ -754,11 +773,33 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 category = _get_category_from_path(skill_md)
 
                 seen_names.add(name)
-                skills.append({
+                skill_record = {
                     "name": name,
                     "description": description,
                     "category": category,
-                })
+                }
+                if include_topology:
+                    from agent.skill_topology import parse_topology
+
+                    metadata = frontmatter.get("metadata")
+                    hermes_meta = (
+                        metadata.get("hermes", {})
+                        if isinstance(metadata, dict)
+                        and isinstance(metadata.get("hermes"), dict)
+                        else {}
+                    )
+                    skill_record.update(
+                        {
+                            "tags": _parse_tags(
+                                hermes_meta.get("tags")
+                                or frontmatter.get("tags", "")
+                            ),
+                            "topology": parse_topology(hermes_meta.get("topology")),
+                            "cost_chars": len(content),
+                            "cost_bytes": len(raw_content),
+                        }
+                    )
+                skills.append(skill_record)
 
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
@@ -782,7 +823,13 @@ def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
-def skills_list(category: str = None, task_id: str = None) -> str:
+def skills_list(
+    category: str = None,
+    task_id: str = None,
+    query: str = None,
+    limit: int = None,
+    budget_chars: int = None,
+) -> str:
     """
     List all available skills (progressive disclosure tier 1 - minimal metadata).
 
@@ -792,13 +839,37 @@ def skills_list(category: str = None, task_id: str = None) -> str:
     Args:
         category: Optional category filter (e.g., "mlops")
         task_id: Optional task identifier used to probe the active backend
+        query: Optional local route query. Omit for the legacy minimal listing.
+        limit: Maximum skills in query mode (including requirements).
+        budget_chars: Maximum cumulative SKILL.md characters in query mode.
 
     Returns:
-        JSON string with minimal skill info: name, description, category
+        JSON string with minimal skill info, or a route artifact in query mode.
     """
     try:
         active_skills_dir = _skills_dir()
         if not active_skills_dir.exists():
+            if query is not None:
+                from agent.skill_topology import (
+                    DEFAULT_ROUTE_BUDGET_CHARS,
+                    DEFAULT_ROUTE_LIMIT,
+                    plan_skill_route,
+                )
+
+                artifact = plan_skill_route(
+                    [],
+                    query,
+                    max_skills=(DEFAULT_ROUTE_LIMIT if limit is None else limit),
+                    budget_chars=(
+                        DEFAULT_ROUTE_BUDGET_CHARS
+                        if budget_chars is None
+                        else budget_chars
+                    ),
+                )
+                return json.dumps(
+                    {"success": True, "mode": "route", **artifact},
+                    ensure_ascii=False,
+                )
             active_skills_dir.mkdir(parents=True, exist_ok=True)
             return json.dumps(
                 {
@@ -811,7 +882,33 @@ def skills_list(category: str = None, task_id: str = None) -> str:
             )
 
         # Find all skills
-        all_skills = _find_all_skills()
+        all_skills = _find_all_skills(include_topology=query is not None)
+
+        if query is not None:
+            from agent.skill_topology import (
+                DEFAULT_ROUTE_BUDGET_CHARS,
+                DEFAULT_ROUTE_LIMIT,
+                plan_skill_route,
+            )
+
+            if category:
+                all_skills = [
+                    s for s in all_skills if s.get("category") == category
+                ]
+            artifact = plan_skill_route(
+                all_skills,
+                query,
+                max_skills=(DEFAULT_ROUTE_LIMIT if limit is None else limit),
+                budget_chars=(
+                    DEFAULT_ROUTE_BUDGET_CHARS
+                    if budget_chars is None
+                    else budget_chars
+                ),
+            )
+            return json.dumps(
+                {"success": True, "mode": "route", **artifact},
+                ensure_ascii=False,
+            )
 
         if not all_skills:
             return json.dumps(
@@ -824,7 +921,9 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
-        # Filter by category if specified
+        # Filter by category if specified. Keep this after the all-skills
+        # emptiness check: legacy callers receive a normal empty filtered
+        # listing, not the "no skills installed" message.
         if category:
             all_skills = [s for s in all_skills if s.get("category") == category]
 
@@ -1751,14 +1850,32 @@ if __name__ == "__main__":
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+    "description": (
+        "List available skills (name + description). Optionally pass query for "
+        "a small local route with reasons and topology. Use skill_view(name) "
+        "to load full content."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
             "category": {
                 "type": "string",
                 "description": "Optional category filter to narrow results",
-            }
+            },
+            "query": {
+                "type": "string",
+                "description": "Optional query for a small deterministic local skill route",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Maximum skills in query mode, including required skills",
+            },
+            "budget_chars": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Maximum cumulative SKILL.md characters in query mode",
+            },
         },
         "required": [],
     },
@@ -1788,7 +1905,11 @@ registry.register(
     toolset="skills",
     schema=SKILLS_LIST_SCHEMA,
     handler=lambda args, **kw: skills_list(
-        category=args.get("category"), task_id=kw.get("task_id")
+        category=args.get("category"),
+        task_id=kw.get("task_id"),
+        query=args.get("query"),
+        limit=args.get("limit"),
+        budget_chars=args.get("budget_chars"),
     ),
     check_fn=check_skills_requirements,
     emoji="📚",

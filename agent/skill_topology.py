@@ -462,9 +462,11 @@ def plan_skill_route(
         }
 
     selected: list[str] = []
+    selected_tier_score: int | None = None
     roles: dict[str, str] = {}
     scores: dict[str, int] = {}
     reasons_by_name: dict[str, list[str]] = {}
+
     def dependency_closure(
         root: Mapping[str, Any],
     ) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -578,11 +580,14 @@ def plan_skill_route(
         )
 
     for negative_score, _, _, root, root_reasons in ranked:
+        root_score = -negative_score
+        if selected_tier_score is not None and root_score != selected_tier_score:
+            break
         root_name = _record_name(root)
         root_key = _name_key(root_name)
         if root_name in selected:
             roles[root_key] = "root"
-            scores[root_key] = -negative_score
+            scores[root_key] = root_score
             reasons_by_name[root_key] = root_reasons
             continue
 
@@ -630,12 +635,13 @@ def plan_skill_route(
             )
             continue
 
+        selected_tier_score = root_score
         selected.extend(new_names)
         for name in closure:
             key = _name_key(name)
             if key == root_key:
                 roles[key] = "root"
-                scores[key] = -negative_score
+                scores[key] = root_score
                 reasons_by_name[key] = root_reasons
             elif key not in roles:
                 roles[key] = "required"

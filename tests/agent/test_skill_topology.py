@@ -67,7 +67,7 @@ def test_parse_topology_absent_is_valid_and_invalid_lifecycle_is_retained_for_au
     assert invalid.invalid_lifecycle == "preview"
 
 
-def test_exact_name_and_taxonomy_matches_beat_description_words():
+def test_route_selects_only_the_highest_scoring_root_tier():
     skills = [
         skill("testing", description="Loose testing helper"),
         skill("other", topology={"domains": ["testing"], "lifecycle": "stable"}),
@@ -76,9 +76,124 @@ def test_exact_name_and_taxonomy_matches_beat_description_words():
 
     route = plan_skill_route(skills, "testing", max_skills=3, budget_chars=1000)
 
-    assert [item["name"] for item in route["route"]] == ["testing", "third", "other"]
-    assert route["route"][0]["score"] > route["route"][1]["score"]
-    assert route["route"][1]["score"] > route["route"][2]["score"]
+    assert [item["name"] for item in route["route"]] == ["testing"]
+
+
+def test_ranking_is_exact_name_then_exact_tag_then_exact_domain_then_description():
+    query = "testing"
+    records = [
+        skill("testing"),
+        skill("tag-match", tags=["testing"]),
+        skill("domain-match", topology={"domains": ["testing"]}),
+        skill("description-match", description="Testing helper"),
+    ]
+
+    scores = [
+        plan_skill_route(records[index:], query, max_skills=4, budget_chars=1000)[
+            "route"
+        ][0]["score"]
+        for index in range(len(records))
+    ]
+
+    assert scores[0] > scores[1] > scores[2] > scores[3]
+
+
+def test_route_excludes_weak_description_root_after_review_tier_is_selected():
+    skills = [
+        skill(
+            "github-code-review",
+            tags=["code-review"],
+            description="Review pull requests",
+        ),
+        skill(
+            "requesting-code-review",
+            tags=["code-review"],
+            description="Review completed work",
+        ),
+        skill(
+            "ads-creative",
+            category="marketing",
+            description="Review advertising creative",
+        ),
+    ]
+
+    result = plan_skill_route(
+        skills,
+        "code review",
+        max_skills=5,
+        budget_chars=1000,
+    )
+
+    assert [item["name"] for item in result["route"]] == [
+        "github-code-review",
+        "requesting-code-review",
+    ]
+    assert all(
+        diagnostic.get("skill") != "ads-creative"
+        and "ads-creative" not in diagnostic.get("message", "")
+        for diagnostic in result["diagnostics"]
+    )
+
+
+def test_route_falls_back_when_every_root_in_higher_tier_cannot_fit():
+    skills = [
+        skill("budget-heavy", tags=["testing"], cost=200),
+        skill("limit-heavy", tags=["testing"], topology={"requires": "dependency"}),
+        skill("dependency", cost=50),
+        skill("fallback", description="Testing helper", cost=50),
+    ]
+
+    result = plan_skill_route(
+        skills,
+        "testing",
+        max_skills=1,
+        budget_chars=100,
+    )
+
+    assert [item["name"] for item in result["route"]] == ["fallback"]
+    assert diagnostic_codes(result) == ["budget_omission", "limit_omission"]
+
+
+def test_route_falls_back_after_higher_tier_graph_fault_and_keeps_diagnostic():
+    result = plan_skill_route(
+        [
+            skill("broken", tags=["testing"], topology={"requires": "missing"}),
+            skill("fallback", description="Testing helper"),
+        ],
+        "testing",
+        max_skills=2,
+        budget_chars=1000,
+    )
+
+    assert [item["name"] for item in result["route"]] == ["fallback"]
+    assert diagnostic_codes(result) == ["missing_required_skill"]
+
+
+@pytest.mark.parametrize(
+    ("max_skills", "budget_chars", "second_topology", "expected_code"),
+    [
+        (1, 1000, None, "limit_omission"),
+        (3, 100, None, "budget_omission"),
+        (3, 1000, {"conflicts": "alpha"}, "route_conflict"),
+    ],
+)
+def test_tied_root_omission_is_explicit_without_lower_tier_diagnostics(
+    max_skills, budget_chars, second_topology, expected_code
+):
+    result = plan_skill_route(
+        [
+            skill("alpha", tags=["testing"], cost=60),
+            skill("beta", tags=["testing"], topology=second_topology, cost=60),
+            skill("weak", description="Testing helper", cost=1001),
+        ],
+        "testing",
+        max_skills=max_skills,
+        budget_chars=budget_chars,
+    )
+
+    assert [item["name"] for item in result["route"]] == ["alpha"]
+    assert [diagnostic["skill"] for diagnostic in result["diagnostics"]] == ["beta"]
+    assert diagnostic_codes(result) == [expected_code]
 
 
 def test_ranking_ties_are_deterministic_by_name_then_category():

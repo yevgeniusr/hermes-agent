@@ -678,9 +678,10 @@ def _find_all_skills(
         skip_disabled: If True, return ALL skills regardless of disabled
             state (used by ``hermes skills`` config UI). Default False
             filters out disabled skills.
-        include_topology: If True, include normalized topology, tags, and
-            actual SKILL.md character/byte costs for local route planning.
-            Default False preserves the minimal metadata shape.
+        include_topology: If True, include normalized topology, tags, actual
+            SKILL.md character/byte costs, and every physical record needed
+            for collision-safe local route planning. Default False preserves
+            exact-name precedence and the minimal metadata shape.
         include_ineligible: If True, include skills gated from the current
             platform/environment. Used only by the read-only installed-graph
             topology audit; routes keep the gates enforced.
@@ -754,7 +755,7 @@ def _find_all_skills(
                     continue
 
                 name = frontmatter.get("name", skill_dir.name)[:MAX_NAME_LENGTH]
-                if name in seen_names:
+                if name in seen_names and not include_topology:
                     continue
                 if name in disabled:
                     continue

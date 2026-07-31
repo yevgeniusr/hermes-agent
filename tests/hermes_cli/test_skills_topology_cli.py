@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -28,6 +30,23 @@ def _record(name, *, topology=None, tags=(), description="", cost=100):
         "cost_chars": cost,
         "cost_bytes": cost,
     }
+
+
+def _write_skill(root: Path, directory: str, name: str) -> None:
+    skill_dir = root / directory
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        f"name: {name}\n"
+        f"description: Description for {name}.\n"
+        "metadata:\n"
+        "  hermes:\n"
+        "    topology:\n"
+        "      lifecycle: stable\n"
+        "---\n\n"
+        f"# {name}\n",
+        encoding="utf-8",
+    )
 
 
 def test_route_parser_accepts_multiword_query_and_budget_options():
@@ -80,6 +99,69 @@ def test_topology_loader_requests_the_full_installed_graph(monkeypatch):
         "include_topology": True,
         "include_ineligible": True,
     }
+
+
+@pytest.mark.parametrize("external_name", ["review", "Review"])
+def test_scanned_collision_blocks_cli_route_and_audit_deterministically(
+    external_name, tmp_path, capsys
+):
+    from hermes_cli import skills_topology
+    from tools import skills_tool
+
+    local_dir = tmp_path / "local"
+    external_a = tmp_path / "external-a"
+    external_b = tmp_path / "external-b"
+    local_dir.mkdir()
+    external_a.mkdir()
+    external_b.mkdir()
+    _write_skill(local_dir, "local-review", "review")
+    _write_skill(external_a, "external-review", external_name)
+    _write_skill(external_b, "deploy", "deploy")
+    route_args = SimpleNamespace(
+        skills_action="route",
+        query=["review"],
+        limit=5,
+        budget_chars=10_000,
+        json=True,
+    )
+    audit_args = SimpleNamespace(skills_action="topology", json=True)
+
+    outputs = []
+    artifacts = []
+    for external_dirs in ([external_a, external_b], [external_b, external_a]):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch(
+                "agent.skill_utils.get_external_skills_dirs",
+                return_value=external_dirs,
+            ),
+        ):
+            skills_tool._SKILLS_CACHE.clear()
+            route = skills_topology.skills_topology_command(route_args)
+            route_output = capsys.readouterr().out
+            audit = skills_topology.skills_topology_command(audit_args)
+            audit_output = capsys.readouterr().out
+        artifacts.append((route, audit))
+        outputs.append((route_output, audit_output))
+
+    assert outputs[0] == outputs[1]
+    assert artifacts[0] == artifacts[1]
+    route, audit = artifacts[0]
+    assert route["status"] == "blocked"
+    assert route["route"] == []
+    assert route["total_cost_chars"] == 0
+    assert route["total_cost_bytes"] == 0
+    assert [item["code"] for item in route["diagnostics"]] == [
+        "canonical_name_collision"
+    ]
+    assert audit["status"] == "issues"
+    assert [item["code"] for item in audit["diagnostics"]] == [
+        "canonical_name_collision"
+    ]
+    for route_output, audit_output in outputs:
+        for root in (local_dir, external_a, external_b):
+            assert str(root) not in route_output
+            assert str(root) not in audit_output
 
 
 @pytest.mark.parametrize(

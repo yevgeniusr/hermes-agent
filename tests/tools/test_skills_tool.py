@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import tools.skills_tool as skills_tool_module
+from agent.skill_topology import audit_topology
 from tools.skills_tool import (
     SKILLS_LIST_SCHEMA,
     _get_required_environment_variables,
@@ -317,6 +318,107 @@ class TestSkillsList:
                 "description": "Description for skill-a.",
                 "category": None,
             }
+        ]
+
+    def test_exact_duplicate_rich_discovery_blocks_route_and_audit(
+        self, tmp_path
+    ):
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+        _make_skill(local_dir, "review")
+        _make_skill(external_dir, "review")
+        _make_skill(external_dir, "deploy")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch(
+                "agent.skill_utils.get_external_skills_dirs",
+                return_value=[external_dir],
+            ),
+        ):
+            skills_tool_module._SKILLS_CACHE.clear()
+            legacy_raw = skills_list()
+            route_raw = skills_list(
+                query="review", limit=5, budget_chars=10_000
+            )
+            unique_raw = skills_list(
+                query="deploy", limit=5, budget_chars=10_000
+            )
+            installed = _find_all_skills(
+                skip_disabled=True,
+                include_topology=True,
+                include_ineligible=True,
+            )
+
+        legacy = json.loads(legacy_raw)
+        route = json.loads(route_raw)
+        unique_route = json.loads(unique_raw)
+        audit = audit_topology(installed)
+
+        assert legacy["skills"] == [
+            {
+                "name": "deploy",
+                "description": "Description for deploy.",
+                "category": None,
+            },
+            {
+                "name": "review",
+                "description": "Description for review.",
+                "category": None,
+            },
+        ]
+        assert [record["name"] for record in installed].count("review") == 2
+        assert route["status"] == "blocked"
+        assert route["route"] == []
+        assert route["total_cost_chars"] == 0
+        assert route["total_cost_bytes"] == 0
+        assert [item["code"] for item in route["diagnostics"]] == [
+            "canonical_name_collision"
+        ]
+        assert audit["status"] == "issues"
+        assert [item["code"] for item in audit["diagnostics"]] == [
+            "canonical_name_collision"
+        ]
+        assert unique_route["status"] == "ok"
+        assert [item["name"] for item in unique_route["route"]] == ["deploy"]
+        for raw in (route_raw, json.dumps(audit, sort_keys=True)):
+            assert str(local_dir) not in raw
+            assert str(external_dir) not in raw
+
+    def test_case_variant_scanner_collision_blocks_queried_tool(self, tmp_path):
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+        _make_skill(local_dir, "review")
+        external_skill = _make_skill(external_dir, "external-review")
+        skill_md = external_skill / "SKILL.md"
+        skill_md.write_text(
+            skill_md.read_text(encoding="utf-8").replace(
+                "name: external-review", "name: Review"
+            ),
+            encoding="utf-8",
+        )
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch(
+                "agent.skill_utils.get_external_skills_dirs",
+                return_value=[external_dir],
+            ),
+        ):
+            skills_tool_module._SKILLS_CACHE.clear()
+            raw = skills_list(query="review", limit=5, budget_chars=10_000)
+
+        route = json.loads(raw)
+        assert route["status"] == "blocked"
+        assert route["route"] == []
+        assert route["total_cost_chars"] == 0
+        assert route["total_cost_bytes"] == 0
+        assert [item["code"] for item in route["diagnostics"]] == [
+            "canonical_name_collision"
         ]
 
     def test_unqueried_empty_category_keeps_legacy_listing_shape(self, tmp_path):

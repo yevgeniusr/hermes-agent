@@ -116,10 +116,23 @@ def test_scanned_collision_blocks_cli_route_and_audit_deterministically(
     external_b.mkdir()
     _write_skill(local_dir, "local-review", "review")
     _write_skill(external_a, "external-review", external_name)
+    _write_skill(external_b, "github-code-review", "github-code-review")
+    _write_skill(
+        external_b,
+        "requesting-code-review",
+        "requesting-code-review",
+    )
     _write_skill(external_b, "deploy", "deploy")
     route_args = SimpleNamespace(
         skills_action="route",
         query=["review"],
+        limit=5,
+        budget_chars=10_000,
+        json=True,
+    )
+    deploy_args = SimpleNamespace(
+        skills_action="route",
+        query=["deploy"],
         limit=5,
         budget_chars=10_000,
         json=True,
@@ -139,14 +152,16 @@ def test_scanned_collision_blocks_cli_route_and_audit_deterministically(
             skills_tool._SKILLS_CACHE.clear()
             route = skills_topology.skills_topology_command(route_args)
             route_output = capsys.readouterr().out
+            deploy_route = skills_topology.skills_topology_command(deploy_args)
+            deploy_output = capsys.readouterr().out
             audit = skills_topology.skills_topology_command(audit_args)
             audit_output = capsys.readouterr().out
-        artifacts.append((route, audit))
-        outputs.append((route_output, audit_output))
+        artifacts.append((route, deploy_route, audit))
+        outputs.append((route_output, deploy_output, audit_output))
 
     assert outputs[0] == outputs[1]
     assert artifacts[0] == artifacts[1]
-    route, audit = artifacts[0]
+    route, deploy_route, audit = artifacts[0]
     assert route["status"] == "blocked"
     assert route["route"] == []
     assert route["total_cost_chars"] == 0
@@ -158,9 +173,12 @@ def test_scanned_collision_blocks_cli_route_and_audit_deterministically(
     assert [item["code"] for item in audit["diagnostics"]] == [
         "canonical_name_collision"
     ]
-    for route_output, audit_output in outputs:
+    assert deploy_route["status"] == "ok"
+    assert [item["name"] for item in deploy_route["route"]] == ["deploy"]
+    for route_output, deploy_output, audit_output in outputs:
         for root in (local_dir, external_a, external_b):
             assert str(root) not in route_output
+            assert str(root) not in deploy_output
             assert str(root) not in audit_output
 
 

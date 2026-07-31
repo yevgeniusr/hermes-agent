@@ -491,18 +491,18 @@ def plan_skill_route(
         for records in collisions.values()
         for record in records
     )
+    if ambiguous_match:
+        return {
+            "version": ROUTE_ARTIFACT_VERSION,
+            "status": "blocked",
+            "query_digest": digest,
+            "limits": {"max_skills": max_skills, "budget_chars": budget_chars},
+            "route": [],
+            "total_cost_chars": 0,
+            "total_cost_bytes": 0,
+            "diagnostics": _sort_diagnostics(diagnostics),
+        }
     if not ranked:
-        if ambiguous_match:
-            return {
-                "version": ROUTE_ARTIFACT_VERSION,
-                "status": "blocked",
-                "query_digest": digest,
-                "limits": {"max_skills": max_skills, "budget_chars": budget_chars},
-                "route": [],
-                "total_cost_chars": 0,
-                "total_cost_bytes": 0,
-                "diagnostics": _sort_diagnostics(diagnostics),
-            }
         diagnostics.append(
             _diagnostic(
                 "no_match", "No installed skill metadata matched the query."

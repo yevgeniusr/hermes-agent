@@ -252,20 +252,48 @@ def test_collision_only_query_fails_closed_without_duplicate_route_or_budget():
     assert result["diagnostics"][0]["names"] == ["Review", "review"]
 
 
-def test_unrelated_unique_skill_routes_when_another_name_is_ambiguous():
+def test_matching_collision_blocks_before_lower_scoring_unique_roots_deterministically():
+    records = [
+        skill("Review", tags=["review"], cost=100),
+        skill("review", tags=["review"], cost=700),
+        skill("github-code-review", description="Review pull requests"),
+        skill("requesting-code-review", description="Review completed work"),
+        skill("deploy", cost=75),
+    ]
+
+    artifacts = [
+        plan_skill_route(order, "review", max_skills=5, budget_chars=2000)
+        for order in (records, list(reversed(records)))
+    ]
+    encoded = [
+        json.dumps(artifact, sort_keys=True, separators=(",", ":"))
+        for artifact in artifacts
+    ]
+
+    assert encoded[0] == encoded[1]
+    result = artifacts[0]
+    assert result["status"] == "blocked"
+    assert result["route"] == []
+    assert result["total_cost_chars"] == 0
+    assert result["total_cost_bytes"] == 0
+    assert diagnostic_codes(result) == ["canonical_name_collision"]
+
+
+def test_unrelated_unique_deploy_routes_when_composed_review_collision_scores_zero():
+    records = [
+        skill("Review", tags=["review"]),
+        skill("review", tags=["review"]),
+        skill("github-code-review", description="Review pull requests"),
+        skill("requesting-code-review", description="Review completed work"),
+        skill("deploy", cost=75),
+    ]
+
     result = plan_skill_route(
-        [
-            skill("Review", tags=["review"]),
-            skill("review", tags=["review"]),
-            skill("testing", cost=75),
-        ],
-        "testing",
-        max_skills=5,
-        budget_chars=1000,
+        records, "deploy", max_skills=5, budget_chars=1000
     )
 
     assert result["status"] == "ok"
-    assert [item["name"] for item in result["route"]] == ["testing"]
+    assert [item["name"] for item in result["route"]] == ["deploy"]
     assert result["total_cost_chars"] == 75
     assert diagnostic_codes(result) == ["canonical_name_collision"]
 

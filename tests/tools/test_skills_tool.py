@@ -401,6 +401,9 @@ class TestSkillsList:
             ),
             encoding="utf-8",
         )
+        _make_skill(external_dir, "github-code-review")
+        _make_skill(external_dir, "requesting-code-review")
+        _make_skill(external_dir, "deploy")
 
         with (
             patch("tools.skills_tool.SKILLS_DIR", local_dir),
@@ -411,8 +414,12 @@ class TestSkillsList:
         ):
             skills_tool_module._SKILLS_CACHE.clear()
             raw = skills_list(query="review", limit=5, budget_chars=10_000)
+            deploy_raw = skills_list(
+                query="deploy", limit=5, budget_chars=10_000
+            )
 
         route = json.loads(raw)
+        deploy_route = json.loads(deploy_raw)
         assert route["status"] == "blocked"
         assert route["route"] == []
         assert route["total_cost_chars"] == 0
@@ -420,6 +427,11 @@ class TestSkillsList:
         assert [item["code"] for item in route["diagnostics"]] == [
             "canonical_name_collision"
         ]
+        assert deploy_route["status"] == "ok"
+        assert [item["name"] for item in deploy_route["route"]] == ["deploy"]
+        for payload in (raw, deploy_raw):
+            assert str(local_dir) not in payload
+            assert str(external_dir) not in payload
 
     def test_unqueried_empty_category_keeps_legacy_listing_shape(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
